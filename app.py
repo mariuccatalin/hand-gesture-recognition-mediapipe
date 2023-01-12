@@ -6,6 +6,7 @@ import argparse
 import itertools
 from collections import Counter
 from collections import deque
+import urllib.request
 
 import cv2 as cv
 import numpy as np
@@ -15,13 +16,52 @@ from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
 
+import time
+
+#TEXT TO SPEECH
+from charset_normalizer import from_bytes
+from gtts import gTTS
+import os
+
+import threading
+import playsound
+
+url='http://192.168.54.195:81/stream'
+
+textList = ["Hello", ".", "Good job", "Ok", "Bye", "I", "want", "water", "Thank you"]
+
+def playText(myText):
+    
+    if myText == "" or myText == ".":
+        return
+    # This module is imported so that we can 
+    # play the converted audio
+    # The text that you want to convert to audio
+    # Language in which you want to convert
+    language = 'en'
+    
+    # Passing the text and language to the engine, 
+    # here we have marked slow=False. Which tells 
+    # the module that the converted audio should 
+    # have a high speed
+    print(myText)
+    myobj = gTTS(text=myText, lang=language, tld = 'com', slow=False)
+    # Saving the converted audio in a mp3 file named
+    # welcome 
+    myobj.save("welcome.mp3")
+    
+    # Playing the converted file
+    playsound.playsound("welcome.mp3")
+    os.remove("welcome.mp3")
+
+    return
 
 def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--width", help='cap width', type=int, default=960)
-    parser.add_argument("--height", help='cap height', type=int, default=540)
+    parser.add_argument("--width", help='cap width', type=int, default=1280)
+    parser.add_argument("--height", help='cap height', type=int, default=1024)
 
     parser.add_argument('--use_static_image_mode', action='store_true')
     parser.add_argument("--min_detection_confidence",
@@ -39,6 +79,9 @@ def get_args():
 
 
 def main():
+    #urllib.request.urlopen("http://192.168.54.195/control?var=framesize&val=6")
+    #urllib.request.urlopen("http://192.168.54.195/control?var=quality&val=25")
+    sentence = ""
     # Argument parsing #################################################################
     args = get_args()
 
@@ -53,7 +96,7 @@ def main():
     use_brect = True
 
     # Camera preparation ###############################################################
-    cap = cv.VideoCapture(cap_device)
+    cap = cv.VideoCapture(cap_device)#url)#cap_device)
     cap.set(cv.CAP_PROP_FRAME_WIDTH, cap_width)
     cap.set(cv.CAP_PROP_FRAME_HEIGHT, cap_height)
 
@@ -85,6 +128,7 @@ def main():
             row[0] for row in point_history_classifier_labels
         ]
 
+    keypoint_classifier_label_previous = keypoint_classifier_labels[0]
     # FPS Measurement ########################################################
     cvFpsCalc = CvFpsCalc(buffer_len=10)
 
@@ -98,19 +142,46 @@ def main():
     #  ########################################################################
     mode = 0
 
+    startTime = time.time()
+    endTime = time.time()
+    started = False
     while True:
+        endTime = time.time()
+        if endTime-startTime > 2 and started:
+            threadArg = textList[hand_sign_id]
+            soundThread = threading.Thread(target=playText,args=(threadArg,))
+            soundThread.start()
+            startTime = time.time()
+            sentence += textList[hand_sign_id]
+            sentence += " "
+            if textList[hand_sign_id] == ".":
+                soundThread = threading.Thread(target=playText,args=(sentence.strip(),))
+                soundThread.start()
+                sentence = ""
+
         fps = cvFpsCalc.get()
 
         # Process Key (ESC: end) #################################################
         key = cv.waitKey(10)
         if key == 27:  # ESC
             break
+        if key == 115:
+            sentence = ""
+
         number, mode = select_mode(key, mode)
 
         # Camera capture #####################################################
+        
         ret, image = cap.read()
         if not ret:
             break
+
+        '''
+        img_resp=urllib.request.urlopen(url)
+        imgnp=np.array(bytearray(img_resp.read()),dtype=np.uint8)
+        image=cv.imdecode(imgnp,-1)
+        '''
+
         image = cv.flip(image, 1)  # Mirror display
         debug_image = copy.deepcopy(image)
 
@@ -123,6 +194,7 @@ def main():
 
         #  ####################################################################
         if results.multi_hand_landmarks is not None:
+            started = True
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
                                                   results.multi_handedness):
                 # Bounding box calculation
@@ -141,10 +213,10 @@ def main():
 
                 # Hand sign classification
                 hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
-                if hand_sign_id == 2:  # Point gesture
+                '''if hand_sign_id == 2:  # Point gesture
                     point_history.append(landmark_list[8])
-                else:
-                    point_history.append([0, 0])
+                else:'''
+                point_history.append([0, 0])
 
                 # Finger gesture classification
                 finger_gesture_id = 0
@@ -168,14 +240,21 @@ def main():
                     keypoint_classifier_labels[hand_sign_id],
                     point_history_classifier_labels[most_common_fg_id[0][0]],
                 )
+
+            if keypoint_classifier_labels[hand_sign_id] != keypoint_classifier_label_previous:
+                startTime = time.time()
+            keypoint_classifier_label_previous = keypoint_classifier_labels[hand_sign_id]
+
         else:
             point_history.append([0, 0])
+            startTime = time.time()
 
         debug_image = draw_point_history(debug_image, point_history)
         debug_image = draw_info(debug_image, fps, mode, number)
 
         # Screen reflection #############################################################
         cv.imshow('Hand Gesture Recognition', debug_image)
+        #print(keypoint_classifier_labels[hand_sign_id])
 
     cap.release()
     cv.destroyAllWindows()
